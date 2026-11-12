@@ -1,0 +1,51 @@
+# mTLS 告警规则（Prometheus）
+# 抓取：各节点 <metrics-addr>/metrics（默认 127.0.0.1:9100，可用 ECHO_METRICS_ADDR 改）
+groups:
+  - name: mtls
+    rules:
+      # 握手失败突增：可能是轮换顺序错了、证书过期、或被未授权方探测。
+      # 轮换窗口内个位数失败属预期（见 README「轮换期间的短暂失败」），所以阈值按速率给。
+      - alert: MTLSHandshakeFailuresHigh
+        expr: sum by (node, reason) (rate(mtls_handshake_failures_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点 {{ $labels.node }} mTLS 握手失败偏多 (reason={{ $labels.reason }})"
+          description: "5 分钟内握手失败速率 > 0.2/s。reason=unknown_ca 多为轮换顺序问题；expired 说明有证书已过期；plaintext 说明有明文客户端在连。"
+
+      # 证书过期倒计时：7 天预警、1 天严重。
+      - alert: MTLSCertExpiringSoon
+        expr: mtls_cert_expiry_seconds < 7 * 24 * 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点 {{ $labels.node }} 证书将在 7 天内过期"
+      - alert: MTLSCertExpiringCritical
+        expr: mtls_cert_expiry_seconds < 24 * 3600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "节点 {{ $labels.node }} 证书将在 24 小时内过期"
+
+      # 热加载连续失败：文件已换但进程还在用旧证书，过期风险被掩盖。
+      - alert: MTLSCertReloadFailing
+        expr: increase(mtls_cert_reload_total{result="error"}[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点 {{ $labels.node }} 证书热加载失败"
+          description: "磁盘上的新证书无法加载（格式错误/证书与私钥不匹配/CN-only 证书被拒），进程仍在用旧证书。"
+
+      # 轮换窗口打开超过预期：bundle 里长期挂着 2 张 CA 说明轮换没收尾。
+      - alert: MTLSCARotationWindowStuck
+        expr: mtls_ca_bundle_certs > 1
+        for: 24h
+        labels:
+          severity: info
+        annotations:
+          summary: "节点 {{ $labels.node }} 的 CA 轮换窗口打开超过 24h"
+          description: "轮换窗口（旧+新 CA 同时受信）应尽快收尾：全集群换完新证书后，把 bundle 切回仅含新 CA。"

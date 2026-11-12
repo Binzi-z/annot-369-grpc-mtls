@@ -1,0 +1,5 @@
+certs/
+bin/
+*.pem
+*.key
+logs/
